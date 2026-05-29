@@ -2,7 +2,10 @@ from fastapi import Depends, FastAPI, HTTPException
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.database import get_db
+import models  
+from database import Base, engine, get_db
+
+Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Jobs Platform API")
 
