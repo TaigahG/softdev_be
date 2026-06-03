@@ -9,39 +9,35 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     String,
+    Table,
     Text,
+    UniqueConstraint,
 )
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
+from sqlalchemy.sql import func
 
-from database import Base
-from schemas import (
+from app.database import Base
+from app.schemas import (
     ApplicationStatus,
     DataSource,
     JobStatus,
     ParseStatus,
-    UserRole,
     WorkingMode,
 )
 
-
-class User(Base):
-    __tablename__ = "users"
-
-    user_id = Column(Integer, primary_key=True)
-    email = Column(String, unique=True, nullable=False, index=True)
-    role = Column(Enum(UserRole), nullable=False)
-    password_hash = Column(String, nullable=False)
-    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
-
-    membership = relationship( 
-        "Membership", back_populates="user", uselist=False, cascade="all, delete-orphan"
-    )
-    candidate = relationship(
-        "Candidate", back_populates="user", uselist=False, cascade="all, delete-orphan"
-    )
-    employer = relationship(
-        "Employer", back_populates="user", uselist=False, cascade="all, delete-orphan"
-    )
+# Users are owned by Supabase Auth (auth.users, UUID PK). We FK to it from
+# candidate/employer/membership rows; we don't manage a public.users table.
+# This stub lets SQLAlchemy resolve the FK. create_all() uses checkfirst=True
+# by default, so it won't try to recreate auth.users on Supabase (which already
+# provisions it). For Alembic, exclude tables with schema='auth' in env.py.
+auth_users = Table(
+    "users",
+    Base.metadata,
+    Column("id", UUID(as_uuid=True), primary_key=True),
+    schema="auth",
+)
+AUTH_USER_FK = "auth.users.id"
 
 
 class Membership(Base):
@@ -49,16 +45,33 @@ class Membership(Base):
 
     membership_id = Column(Integer, primary_key=True)
     user_id = Column(
-        Integer,
-        ForeignKey("users.user_id", ondelete="CASCADE"),
+        UUID(as_uuid=True),
+        ForeignKey(AUTH_USER_FK, ondelete="CASCADE"),
         nullable=False,
         unique=True,
     )
+    # Stripe tracking. customer_id is set on first checkout (before payment);
+    # subscription_id + dates land via webhook after payment succeeds.
+    stripe_customer_id = Column(String, nullable=True, unique=True, index=True)
+    stripe_subscription_id = Column(
+        String, nullable=True, unique=True, index=True
+    )
+    status = Column(String, nullable=True)
+    cancel_at_period_end = Column(Boolean, nullable=False, default=False)
     is_active = Column(Boolean, nullable=False, default=False)
-    start_date = Column(Date, nullable=False)
-    end_date = Column(Date, nullable=False)
-
-    user = relationship("User", back_populates="membership")
+    start_date = Column(Date, nullable=True)
+    end_date = Column(Date, nullable=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
 
 
 class Skill(Base):
@@ -73,23 +86,46 @@ class Candidate(Base):
 
     candidate_id = Column(Integer, primary_key=True)
     user_id = Column(
-        Integer,
-        ForeignKey("users.user_id", ondelete="CASCADE"),
+        UUID(as_uuid=True),
+        ForeignKey(AUTH_USER_FK, ondelete="CASCADE"),
         nullable=False,
         unique=True,
     )
-    full_name = Column(String, nullable=False)
-    contact_info = Column(String, nullable=True)
-    years_of_experience = Column(Integer, nullable=True)
+    full_name = Column(String(255), nullable=False)
+    # Step-1 personal
+    phone_number = Column(String(50), nullable=True)
+    gender = Column(String(20), nullable=True)
+    date_of_birth = Column(Date, nullable=True)
+    nationality = Column(String(100), nullable=True)
+    marital_status = Column(String(30), nullable=True)
+    website = Column(String(255), nullable=True)
+    biography = Column(Text, nullable=True)
+    # Step-1 professional — years_of_experience is a bucket string ("0-1" etc.)
+    years_of_experience = Column(String(20), nullable=True)
+    candidate_level = Column(String(30), nullable=True)
+    profile_picture = Column(String(500), nullable=True)
+    # Step-2 education — flat, single entry (replaces the dropped educations table)
+    education_level = Column(String(50), nullable=True)
+    field_of_study = Column(String(255), nullable=True)
+    # Preferences
     preferred_working_mode = Column(Enum(WorkingMode), nullable=True)
     preferred_location = Column(String, nullable=True)
+    # Timestamps — server_default so raw-SQL inserts (e.g. the auth trigger)
+    # also get a value; Python onupdate covers SQLAlchemy UPDATEs.
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
 
-    user = relationship("User", back_populates="candidate")
     resumes = relationship(
         "Resume", back_populates="candidate", cascade="all, delete-orphan"
-    )
-    educations = relationship(
-        "Education", back_populates="candidate", cascade="all, delete-orphan"
     )
     work_experiences = relationship(
         "WorkExperience", back_populates="candidate", cascade="all, delete-orphan"
@@ -123,25 +159,6 @@ class Resume(Base):
     candidate = relationship("Candidate", back_populates="resumes")
     work_experiences = relationship("WorkExperience", back_populates="resume")
     candidate_skills = relationship("CandidateSkill", back_populates="resume")
-
-
-class Education(Base):
-    __tablename__ = "educations"
-
-    education_id = Column(Integer, primary_key=True)
-    candidate_id = Column(
-        Integer,
-        ForeignKey("candidates.candidate_id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    institution = Column(String, nullable=False)
-    degree = Column(String, nullable=False)
-    field_of_study = Column(String, nullable=False)
-    start_date = Column(Date, nullable=True)
-    end_date = Column(Date, nullable=True)
-    source = Column(Enum(DataSource), nullable=False, default=DataSource.manual)
-
-    candidate = relationship("Candidate", back_populates="educations")
 
 
 class WorkExperience(Base):
@@ -199,15 +216,30 @@ class Employer(Base):
 
     employer_id = Column(Integer, primary_key=True)
     user_id = Column(
-        Integer,
-        ForeignKey("users.user_id", ondelete="CASCADE"),
+        UUID(as_uuid=True),
+        ForeignKey(AUTH_USER_FK, ondelete="CASCADE"),
         nullable=False,
         unique=True,
     )
-    full_name = Column(String, nullable=False)
-    company_name = Column(String, nullable=False)
+    full_name = Column(String(255), nullable=False)
+    company_name = Column(String(255), nullable=False)
+    phone_number = Column(String(50), nullable=True)
+    company_information = Column(Text, nullable=True)
+    company_website = Column(String(255), nullable=True)
+    profile_picture = Column(String(500), nullable=True)
+    company_picture = Column(String(500), nullable=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
 
-    user = relationship("User", back_populates="employer")
     job_postings = relationship(
         "JobPosting", back_populates="employer", cascade="all, delete-orphan"
     )
@@ -262,6 +294,11 @@ class JobSkill(Base):
 
 class Application(Base):
     __tablename__ = "applications"
+    __table_args__ = (
+        UniqueConstraint(
+            "candidate_id", "job_id", name="uq_application_candidate_job"
+        ),
+    )
 
     application_id = Column(Integer, primary_key=True)
     candidate_id = Column(
@@ -278,6 +315,7 @@ class Application(Base):
     status = Column(
         Enum(ApplicationStatus), nullable=False, default=ApplicationStatus.pending
     )
+    cover_letter = Column(Text, nullable=True)
 
     candidate = relationship("Candidate", back_populates="applications")
     job = relationship("JobPosting", back_populates="applications")

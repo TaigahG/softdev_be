@@ -27,10 +27,12 @@ config.set_main_option("sqlalchemy.url", database_url)
 
 target_metadata = Base.metadata
 
-# other values from the config, defined by the needs of env.py,
-# can be acquired:
-# my_important_option = config.get_main_option("my_important_option")
-# ... etc.
+
+def include_object(object_, name, type_, reflected, compare_to):
+    # auth.users is owned by Supabase; don't autogenerate migrations for it.
+    if type_ == "table" and getattr(object_, "schema", None) == "auth":
+        return False
+    return True
 
 
 def run_migrations_offline() -> None:
@@ -51,6 +53,7 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        include_object=include_object,
     )
 
     with context.begin_transaction():
@@ -72,7 +75,9 @@ def run_migrations_online() -> None:
 
     with connectable.connect() as connection:
         context.configure(
-            connection=connection, target_metadata=target_metadata
+            connection=connection,
+            target_metadata=target_metadata,
+            include_object=include_object,
         )
 
         with context.begin_transaction():

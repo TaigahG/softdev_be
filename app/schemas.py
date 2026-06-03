@@ -1,14 +1,22 @@
-from pydantic import BaseModel, EmailStr
-from typing import Optional, List
+from pydantic import BaseModel
+from typing import Literal, Optional, List
 from datetime import date, datetime
 from enum import Enum
+from uuid import UUID
+
+
+# Constrained-string types — sourced from the frontend registration form.
+# Stored as plain VARCHAR in the DB; validated here at the API boundary.
+Gender = Literal["male", "female", "other", "prefer-not-to-say"]
+MaritalStatus = Literal["single", "married", "divorced", "widowed"]
+CandidateLevel = Literal["entry", "mid", "expert"]
+EducationLevel = Literal[
+    "high-school", "associate", "bachelor", "master", "doctorate"
+]
+YearsOfExperience = Literal["0-1", "1-3", "3-5", "5-10", "10+"]
 
 
 # Enums
-class UserRole(str, Enum):
-    candidate = "candidate"
-    employer = "employer"
-
 class WorkingMode(str, Enum):
     remote = "remote"
     onsite = "onsite"
@@ -32,38 +40,36 @@ class DataSource(str, Enum):
     manual = "manual"
 
 
-# User
-class UserBase(BaseModel):
-    email: EmailStr
-    role: UserRole
-
-class UserCreate(UserBase):
-    # User registration
-    password: str
-
-class UserOut(UserBase):
-    user_id: int
-    created_at: datetime
-
-    class Config:
-        from_attributes = True
+# Note: user identity is owned by Supabase Auth (auth.users, UUID PK).
+# This service does not store users directly — candidate/employer/membership
+# rows FK to auth.users.id by UUID. Profile fields live on those tables.
 
 
-# Membership
+# Membership — Stripe-backed candidate subscription
 class MembershipBase(BaseModel):
-    is_active: bool
-    start_date: date
-    end_date: date
+    is_active: bool = False
+    status: Optional[str] = None              # mirrors Stripe sub status
+    cancel_at_period_end: bool = False
+    start_date: Optional[date] = None         # current period start
+    end_date: Optional[date] = None           # current period end
 
 class MembershipCreate(MembershipBase):
-    user_id: int
+    user_id: UUID
 
 class MembershipOut(MembershipBase):
-    membership_id: int
-    user_id: int
+    membership_id: Optional[int] = None       # None for synthetic "not a member" response
+    user_id: UUID
+    stripe_customer_id: Optional[str] = None
+    stripe_subscription_id: Optional[str] = None
 
     class Config:
         from_attributes = True
+
+class MembershipCheckoutOut(BaseModel):
+    url: str                                  # Stripe-hosted checkout URL
+
+class MembershipPortalOut(BaseModel):
+    url: str                                  # Stripe Customer Portal URL
 
 
 # Skills
@@ -100,27 +106,6 @@ class ResumeOut(ResumeBase):
         from_attributes = True
 
 
-# Education
-class EducationBase(BaseModel):
-    institution: str
-    degree: str
-    field_of_study: str
-    start_date: Optional[date] = None
-    end_date: Optional[date] = None
-
-class EducationCreate(EducationBase):
-    candidate_id: int
-    source: DataSource = DataSource.manual
-
-class EducationOut(EducationBase):
-    education_id: int
-    candidate_id: int
-    source: DataSource
-
-    class Config:
-        from_attributes = True
-
-
 # Work Experiences
 class WorkExperienceBase(BaseModel):
     company_name: str
@@ -130,9 +115,16 @@ class WorkExperienceBase(BaseModel):
     description: Optional[str] = None
 
 class WorkExperienceCreate(WorkExperienceBase):
-    candidate_id: int
+    # candidate_id is derived from auth, never accepted from the client
     resume_id: Optional[int] = None      # null if manually entered
     source: DataSource = DataSource.manual
+
+class WorkExperienceUpdate(BaseModel):
+    company_name: Optional[str] = None
+    job_title: Optional[str] = None
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
+    description: Optional[str] = None
 
 class WorkExperienceOut(WorkExperienceBase):
     experience_id: int
@@ -147,25 +139,43 @@ class WorkExperienceOut(WorkExperienceBase):
 # Candidate
 class CandidateBase(BaseModel):
     full_name: str
-    contact_info: Optional[str] = None
-    years_of_experience: Optional[int] = None
+    # Step-1 personal fields
+    phone_number: Optional[str] = None
+    gender: Optional[Gender] = None
+    date_of_birth: Optional[date] = None
+    nationality: Optional[str] = None
+    marital_status: Optional[MaritalStatus] = None
+    website: Optional[str] = None
+    biography: Optional[str] = None
+    # Step-1 professional fields
+    years_of_experience: Optional[YearsOfExperience] = None
+    candidate_level: Optional[CandidateLevel] = None
+    profile_picture: Optional[str] = None
+    # Step-2 education (flat, single entry — replaces the dropped educations table)
+    education_level: Optional[EducationLevel] = None
+    field_of_study: Optional[str] = None
+    # Preferences (kept from prior schema)
     preferred_working_mode: Optional[WorkingMode] = None
     preferred_location: Optional[str] = None
 
 class CandidateCreate(CandidateBase):
-    user_id: int
+    user_id: UUID
 
 class CandidateUpdate(CandidateBase):
     # All fields optional for PATCH
     full_name: Optional[str] = None
+    # When provided, replaces ALL candidate_skills rows (parsed entries get wiped;
+    # re-upload the resume to restore them). Source becomes 'manual'.
+    skills: Optional[List[str]] = None
 
 class CandidateOut(CandidateBase):
     candidate_id: int
-    user_id: int
-    resume_url: Optional[str] = None
+    user_id: UUID
+    resume_url: Optional[str] = None    # derived from latest Resume row
     skills: List[SkillOut] = []
-    educations: List[EducationOut] = []
     work_experiences: List[WorkExperienceOut] = []
+    created_at: datetime
+    updated_at: datetime
 
     class Config:
         from_attributes = True
@@ -191,9 +201,14 @@ class CandidateSkillOut(BaseModel):
 class EmployerBase(BaseModel):
     full_name: str
     company_name: str
+    phone_number: Optional[str] = None
+    company_information: Optional[str] = None
+    company_website: Optional[str] = None
+    profile_picture: Optional[str] = None    # contact person avatar
+    company_picture: Optional[str] = None    # company banner / logo
 
 class EmployerCreate(EmployerBase):
-    user_id: int
+    user_id: UUID
 
 class EmployerUpdate(EmployerBase):
     full_name: Optional[str] = None
@@ -201,7 +216,9 @@ class EmployerUpdate(EmployerBase):
 
 class EmployerOut(EmployerBase):
     employer_id: int
-    user_id: int
+    user_id: UUID
+    created_at: datetime
+    updated_at: datetime
 
     class Config:
         from_attributes = True
@@ -218,13 +235,15 @@ class JobPostingBase(BaseModel):
     salary_range: Optional[str] = None
 
 class JobPostingCreate(JobPostingBase):
-    employer_id: int
+    # employer_id is derived from auth, never accepted from the client
     status: JobStatus = JobStatus.draft
+    required_skills: Optional[List[str]] = None
 
 class JobPostingUpdate(JobPostingBase):
     # All fields optional for PATCH
     title: Optional[str] = None
     status: Optional[JobStatus] = None
+    required_skills: Optional[List[str]] = None
 
 class JobPostingOut(JobPostingBase):
     job_id: int
@@ -256,12 +275,16 @@ class ApplicationBase(BaseModel):
     job_id: int
 
 class ApplicationCreate(ApplicationBase):
-    pass
+    cover_letter: Optional[str] = None   # submitted at apply time
+
+class ApplicationUpdate(BaseModel):
+    status: ApplicationStatus            # employer marks pending → reviewed
 
 class ApplicationOut(ApplicationBase):
     application_id: int
     applied_at: datetime
     status: ApplicationStatus
+    cover_letter: Optional[str] = None
     candidate: Optional[CandidateOut] = None   # for employer view
     job: Optional[JobPostingOut] = None        # for candidate view
 

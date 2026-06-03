@@ -1,7 +1,15 @@
 fastapi
 uvicorn[standard]
+python-multipart
 sqlalchemy
 alembic
 psycopg2-binary
 python-dotenv
 pydantic[email]
+httpx<0.28
+supabase
+pypdf
+python-docx
+anthropic>=0.92
+pyjwt[crypto]
+stripe
