@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.crud import job_posting as crud_job
+from app.crud import search as crud_search
 from app.database import get_db
 from app.models import Employer
 from app.schemas import (
@@ -36,18 +37,28 @@ def create_job_posting(
 @router.get("", response_model=Page[JobPostingOut])
 def list_job_postings(
     page: PageParams = Depends(),
-    keyword: Optional[str] = Query(None),
+    keyword: Optional[str] = Query(None, description="Keyword (FTS + synonyms)"),
     location: Optional[str] = Query(None),
     work_mode: Optional[WorkingMode] = Query(None),
+    salary_range: Optional[str] = Query(None),
     status_filter: Optional[JobStatus] = Query(None, alias="status"),
+    fuzzy: bool = Query(False, description="Enable typo-tolerant matching (pg_trgm)"),
     db: Session = Depends(get_db),
 ) -> Page[JobPostingOut]:
-    items, total = crud_job.list_with_filters(
+    """Public job board. Supports all 4 modes: keyword, filter, keyword+filter,
+    and fuzzy (typo-tolerant + synonym expansion via the synonyms service).
+
+    Synonyms always apply when `keyword` is provided. `fuzzy=true` additionally
+    enables pg_trgm similarity for typo tolerance (e.g. 'sofware enginer').
+    """
+    items, total = crud_search.search_jobs(
         db,
         keyword=keyword,
         location=location,
         work_mode=work_mode,
+        salary_range=salary_range,
         status=status_filter,
+        fuzzy=fuzzy,
         limit=page.limit,
         offset=page.offset,
     )
