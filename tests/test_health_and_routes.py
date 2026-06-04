@@ -8,6 +8,7 @@ EXPECTED_PATHS = {
     "/candidates/me/resumes",
     "/candidates/me/profile-picture",
     "/candidates/me/work-experiences",
+    "/candidates/me/recommended-jobs",
     "/candidates/{candidate_id}",
     # work experience
     "/work-experiences/{experience_id}",
@@ -20,6 +21,7 @@ EXPECTED_PATHS = {
     "/job-postings",
     "/job-postings/{job_id}",
     "/job-postings/{job_id}/applications",
+    "/job-postings/{job_id}/recommended-candidates",
     # applications
     "/applications",
     "/applications/me",

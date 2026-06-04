@@ -4,14 +4,17 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.crud import job_posting as crud_job
+from app.crud import recommendation as crud_recommendation
 from app.crud import search as crud_search
 from app.database import get_db
 from app.models import Employer
 from app.schemas import (
+    CandidateOut,
     JobPostingCreate,
     JobPostingOut,
     JobPostingUpdate,
     JobStatus,
+    RecommendedCandidatesOut,
     WorkingMode,
 )
 from app.services.auth import get_current_employer
@@ -102,3 +105,28 @@ def delete_job_posting(
         raise HTTPException(status_code=404, detail="job posting not found")
     ensure_employer_owns_job(job, employer)
     crud_job.delete(db, job)
+
+
+@router.get(
+    "/{job_id}/recommended-candidates",
+    response_model=RecommendedCandidatesOut,
+)
+def get_recommended_candidates(
+    job_id: int,
+    employer: Employer = Depends(get_current_employer),
+    db: Session = Depends(get_db),
+) -> RecommendedCandidatesOut:
+    """Top candidates ranked by fit for this job. Employer must own the job.
+    No membership gate on the employer side in v1 — returns the full ranked
+    list."""
+    job = crud_job.get(db, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job posting not found")
+    ensure_employer_owns_job(job, employer)
+
+    candidates = crud_recommendation.recommend_candidates_for_job(db, job=job)
+    return RecommendedCandidatesOut(
+        is_member=True,        # placeholder until employer plans exist
+        total=len(candidates),
+        candidates=[CandidateOut.model_validate(c) for c in candidates],
+    )
