@@ -1,2 +1,15 @@
 /.env
 /.vscode
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# pytest
+.pytest_cache/
+
+# alembic local artifacts (versions live under alembic/versions if you use it)
+
+# misc
+/tmp/
+*.png

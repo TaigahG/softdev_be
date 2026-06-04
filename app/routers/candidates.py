@@ -1,12 +1,23 @@
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
+from typing import Optional
+
+from fastapi import Query
+
 from app.crud import candidate as crud_candidate
+from app.crud import search as crud_search
 from app.database import get_db
 from app.models import Candidate, Employer
-from app.schemas import CandidateOut, CandidateUpdate, ResumeOut
+from app.schemas import (
+    CandidateOut,
+    CandidateUpdate,
+    ResumeOut,
+    WorkingMode,
+)
 from app.services import storage
 from app.services.auth import get_current_candidate, get_current_employer
+from app.utils.pagination import Page, PageParams
 
 router = APIRouter(prefix="/candidates", tags=["candidates"])
 
@@ -52,6 +63,31 @@ def upload_profile_picture(
     url = storage.upload_image(storage.images_bucket(), file)
     crud_candidate.set_profile_picture(db, candidate=candidate, url=url)
     return {"url": url}
+
+
+@router.get("/search", response_model=Page[CandidateOut])
+def search_candidates(
+    page: PageParams = Depends(),
+    keyword: Optional[str] = Query(None, description="Keyword (FTS + synonyms)"),
+    preferred_location: Optional[str] = Query(None),
+    working_mode: Optional[WorkingMode] = Query(None),
+    fuzzy: bool = Query(False, description="Enable typo-tolerant matching"),
+    _employer: Employer = Depends(get_current_employer),   # employer-only
+    db: Session = Depends(get_db),
+) -> Page[CandidateOut]:
+    """Employer-only candidate search. Same 4 modes as job search."""
+    items, total = crud_search.search_candidates(
+        db,
+        keyword=keyword,
+        preferred_location=preferred_location,
+        working_mode=working_mode,
+        fuzzy=fuzzy,
+        limit=page.limit,
+        offset=page.offset,
+    )
+    return Page[CandidateOut].build(
+        [_to_out(db, c) for c in items], total, page
+    )
 
 
 @router.get("/{candidate_id}", response_model=CandidateOut)
