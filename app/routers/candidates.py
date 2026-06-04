@@ -6,12 +6,16 @@ from typing import Optional
 from fastapi import Query
 
 from app.crud import candidate as crud_candidate
+from app.crud import membership as crud_membership
+from app.crud import recommendation as crud_recommendation
 from app.crud import search as crud_search
 from app.database import get_db
 from app.models import Candidate, Employer
 from app.schemas import (
     CandidateOut,
     CandidateUpdate,
+    JobPostingOut,
+    RecommendedJobsOut,
     ResumeOut,
     WorkingMode,
 )
@@ -52,6 +56,24 @@ def list_my_resumes(
     db: Session = Depends(get_db),
 ) -> list[ResumeOut]:
     return crud_candidate.list_resumes(db, candidate.candidate_id)
+
+
+@router.get("/me/recommended-jobs", response_model=RecommendedJobsOut)
+def get_my_recommended_jobs(
+    candidate: Candidate = Depends(get_current_candidate),
+    db: Session = Depends(get_db),
+) -> RecommendedJobsOut:
+    """Top-N published jobs ranked by fit. Non-members are capped at 10;
+    active members get the full ranked list."""
+    is_member = crud_membership.is_active_member(db, candidate.user_id)
+    jobs = crud_recommendation.recommend_jobs_for_candidate(
+        db, candidate=candidate, is_member=is_member
+    )
+    return RecommendedJobsOut(
+        is_member=is_member,
+        total=len(jobs),
+        jobs=[JobPostingOut.model_validate(j) for j in jobs],
+    )
 
 
 @router.post("/me/profile-picture", status_code=status.HTTP_201_CREATED)
