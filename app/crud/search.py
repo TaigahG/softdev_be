@@ -16,9 +16,10 @@ Requires Supabase Postgres extension:
 
 (One-time SQL Editor action — see README/setup notes.)
 """
+import re
 from typing import Optional
 
-from sqlalchemy import func, or_, text
+from sqlalchemy import Integer, cast, func, or_, text
 from sqlalchemy.orm import Session, joinedload
 
 from app.models import (
@@ -30,6 +31,24 @@ from app.models import (
 )
 from app.schemas import JobStatus, WorkingMode
 from app.services.synonyms import expand, to_tsquery_or
+
+def _parse_salary_filter(salary_str: str) -> tuple[int, int | None]:
+    """Parse a frontend salary filter string into (min, max) integers.
+
+    Handles formats like '$4000 - $6000' and '$15000+'.
+    Returns (min, None) for open-ended ranges.
+    """
+    s = salary_str.replace("$", "").replace(",", "").strip()
+    if "+" in s:
+        try:
+            return int(s.replace("+", "").strip()), None
+        except ValueError:
+            return 0, None
+    m = re.match(r"(\d+)\s*-\s*(\d+)", s)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    return 0, None
+
 
 # Trigram word_similarity threshold for the fuzzy match (0.0-1.0).
 # Lower = more permissive but more false-positives. 0.3 catches typos like
@@ -113,7 +132,29 @@ def search_jobs(
     if work_mode:
         query = query.filter(JobPosting.work_mode == work_mode)
     if salary_range:
-        query = query.filter(JobPosting.salary_range.ilike(f"%{salary_range}%"))
+        filter_min, filter_max = _parse_salary_filter(salary_range)
+        # Extract the minimum salary number from the stored salary_range string.
+        # e.g., "$4,000 - $11,000" → first capture group "4,000" → strip commas → cast to int.
+        db_min = cast(
+            func.regexp_replace(
+                func.regexp_replace(
+                    JobPosting.salary_range,
+                    r'^[^0-9]*([0-9,]+).*$',
+                    r'\1',
+                ),
+                r',',
+                '',
+                'g',
+            ),
+            Integer,
+        )
+        salary_clauses = [JobPosting.salary_range.op('~')(r'[0-9]')]
+        if filter_max is None:
+            salary_clauses.append(db_min >= filter_min)
+        else:
+            salary_clauses.append(db_min >= filter_min)
+            salary_clauses.append(db_min <= filter_max)
+        query = query.filter(*salary_clauses)
 
     total = query.with_entities(func.count(JobPosting.job_id.distinct())).scalar() or 0
     items = (
