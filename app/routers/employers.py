@@ -1,12 +1,16 @@
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from typing import Optional
+
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.crud import employer as crud_employer
+from app.crud import job_posting as crud_job
 from app.database import get_db
 from app.models import Employer
-from app.schemas import EmployerOut, EmployerUpdate
+from app.schemas import EmployerOut, EmployerUpdate, JobPostingOut
 from app.services import storage
 from app.services.auth import AuthUser, get_current_employer, get_current_user
+from app.utils.pagination import Page, PageParams
 
 router = APIRouter(prefix="/employers", tags=["employers"])
 
@@ -47,6 +51,25 @@ def upload_company_picture(
     url = storage.upload_image(storage.images_bucket(), file)
     crud_employer.set_company_picture(db, employer=employer, url=url)
     return {"url": url}
+
+
+@router.get("/me/job-postings", response_model=Page[JobPostingOut])
+def list_my_job_postings(
+    page: PageParams = Depends(),
+    keyword: Optional[str] = Query(None),
+    employer: Employer = Depends(get_current_employer),
+    db: Session = Depends(get_db),
+) -> Page[JobPostingOut]:
+    items, total = crud_job.list_by_employer(
+        db,
+        employer_id=employer.employer_id,
+        keyword=keyword,
+        limit=page.limit,
+        offset=page.offset,
+    )
+    return Page[JobPostingOut].build(
+        [JobPostingOut.model_validate(j) for j in items], total, page
+    )
 
 
 @router.get("/{employer_id}", response_model=EmployerOut)

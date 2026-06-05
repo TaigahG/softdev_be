@@ -103,6 +103,33 @@ def list_with_filters(
     return items, total
 
 
+def list_by_employer(
+    db: Session,
+    *,
+    employer_id: int,
+    keyword: Optional[str] = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> tuple[list[JobPosting], int]:
+    query = (
+        db.query(JobPosting)
+        .options(joinedload(JobPosting.required_skills))
+        .filter(JobPosting.employer_id == employer_id)
+    )
+    if keyword:
+        like = f"%{keyword}%"
+        query = query.filter(JobPosting.title.ilike(like))
+
+    total = query.distinct(JobPosting.job_id).count()
+    items = (
+        query.order_by(JobPosting.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    return items, total
+
+
 def update(
     db: Session, *, job: JobPosting, data: JobPostingUpdate
 ) -> JobPosting:
