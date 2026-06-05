@@ -134,29 +134,39 @@ class SeededEmployer:
     company_name: str
 
 
-def _create_supabase_user(email: str, password: str) -> UUID:
+def _get_supabase_client():
     url = os.getenv("SUPABASE_URL")
     key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
     if not url or not key:
         raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set.")
+    return create_client(url, key)
 
-    client = create_client(url, key)
-    result = client.auth.admin.create_user(
-        {
-            "email": email,
-            "password": password,
-            "email_confirm": True,
-            "user_metadata": {"role": "employer"},
-        }
-    )
 
-    user = getattr(result, "user", None) or result.get("user")
-    if not user:
-        raise RuntimeError("Failed to create user in Supabase Auth.")
-    user_id = getattr(user, "id", None) or user.get("id")
-    if not user_id:
-        raise RuntimeError("Supabase user id missing from response.")
-    return UUID(str(user_id))
+def _get_or_create_supabase_user(email: str, password: str) -> UUID:
+    client = _get_supabase_client()
+    try:
+        result = client.auth.admin.create_user(
+            {
+                "email": email,
+                "password": password,
+                "email_confirm": True,
+                "user_metadata": {"role": "employer"},
+            }
+        )
+        user = getattr(result, "user", None) or result.get("user")
+        if user:
+            user_id = getattr(user, "id", None) or user.get("id")
+            if user_id:
+                return UUID(str(user_id))
+    except Exception:
+        pass  # fall through to lookup
+
+    # User already exists — look up by email
+    all_users = client.auth.admin.list_users()
+    for u in all_users:
+        if getattr(u, "email", None) == email:
+            return UUID(str(u.id))
+    raise RuntimeError(f"Could not find or create Supabase user for {email}")
 
 
 def _should_abort_if_seeded(db) -> None:
@@ -201,7 +211,8 @@ def main() -> None:
             suffix = f"-{EMAIL_SUFFIX}" if EMAIL_SUFFIX else ""
             email = f"{EMAIL_PREFIX}-{company_number:02d}{suffix}@seed.example"
 
-            user_id = _create_supabase_user(email, DEFAULT_PASSWORD)
+            # Always resolve the Supabase user (create or look up).
+            user_id = _get_or_create_supabase_user(email, DEFAULT_PASSWORD)
 
             company_seed = f"company-{company_number:02d}"
             profile_seed = f"profile-{company_number:02d}"
@@ -222,6 +233,15 @@ def main() -> None:
                 .first()
             )
             if existing_employer:
+                # Patch blank trigger-created records with real seed data.
+                existing_employer.full_name = f"Recruiter {company_number:02d}"
+                existing_employer.company_name = company_name
+                existing_employer.phone_number = _random_phone()
+                existing_employer.company_information = random.choice(COMPANY_TAGLINES)
+                existing_employer.company_website = f"https://{company_name.replace(' ', '').lower()}.com"
+                existing_employer.profile_picture = profile_picture
+                existing_employer.company_picture = company_picture
+                db.flush()
                 seeded_employers.append(
                     SeededEmployer(
                         employer_id=existing_employer.employer_id,
