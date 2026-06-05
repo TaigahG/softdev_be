@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.crud import job_posting as crud_job
+from app.crud import membership as crud_membership
 from app.crud import recommendation as crud_recommendation
 from app.crud import search as crud_search
 from app.database import get_db
@@ -117,16 +118,19 @@ def get_recommended_candidates(
     db: Session = Depends(get_db),
 ) -> RecommendedCandidatesOut:
     """Top candidates ranked by fit for this job. Employer must own the job.
-    No membership gate on the employer side in v1 — returns the full ranked
-    list."""
+    Non-members see only the top 10; members see the full ranked list."""
     job = crud_job.get(db, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="job posting not found")
     ensure_employer_owns_job(job, employer)
 
+    is_member = crud_membership.is_active_member(db, employer.user_id)
     candidates = crud_recommendation.recommend_candidates_for_job(db, job=job)
+    total = len(candidates)
+    if not is_member:
+        candidates = candidates[:10]
     return RecommendedCandidatesOut(
-        is_member=True,        # placeholder until employer plans exist
-        total=len(candidates),
+        is_member=is_member,
+        total=total,
         candidates=[CandidateOut.model_validate(c) for c in candidates],
     )
