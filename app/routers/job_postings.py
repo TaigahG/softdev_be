@@ -126,11 +126,8 @@ def get_recommended_candidates(
 
     is_member = crud_membership.is_active_member(db, employer.user_id)
     candidates = crud_recommendation.recommend_candidates_for_job(db, job=job)
-    total = len(candidates)
-    if not is_member:
-        candidates = candidates[:10]
     return RecommendedCandidatesOut(
         is_member=is_member,
-        total=total,
+        total=len(candidates),
         candidates=[CandidateOut.model_validate(c) for c in candidates],
     )
